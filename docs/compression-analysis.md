@@ -1,3 +1,8 @@
+---
+layout: default
+title: Compression Analysis
+---
+
 # Compression Analysis
 
 This document explains the "Compression Impact" chart in the storage efficiency report — what the numbers mean, where they come from, and why so little of the test data benefits from compression.

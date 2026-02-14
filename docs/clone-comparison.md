@@ -1,3 +1,8 @@
+---
+layout: default
+title: Linked Clones Across Platforms
+---
+
 # Linked Clones Across Platforms: VMware, ODF, and IBM Cloud
 
 ## Introduction

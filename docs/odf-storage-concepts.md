@@ -1,10 +1,15 @@
+---
+layout: default
+title: ODF Storage Concepts for vSAN Administrators
+---
+
 # ODF Storage Concepts for vSAN Administrators
 
 ## Introduction
 
 If you manage VMware vSAN, you think in terms of disk groups, storage policies, FTT/FTM settings, and fault domains. OpenShift Data Foundation (ODF) — Red Hat's software-defined storage built on Ceph — solves the same problems with different primitives. The concepts map more closely than you might expect, but the boundaries between them sit in different places.
 
-This document maps vSAN concepts to their ODF equivalents so you can reason about capacity planning, data protection, and performance without starting from scratch. It complements the [clone mechanics comparison](clone-comparison.md), which covers how VM disk cloning works across platforms.
+This document maps vSAN concepts to their ODF equivalents so you can reason about capacity planning, data protection, and performance without starting from scratch. It complements the [clone mechanics comparison](clone-comparison.html), which covers how VM disk cloning works across platforms.
 
 ## The Big Picture: vSAN vs ODF Architecture
 

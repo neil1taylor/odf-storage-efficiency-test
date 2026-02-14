@@ -14,13 +14,13 @@ This test harness quantifies that efficiency by measuring Ceph pool usage, per-i
 
 ## Background
 
-Not all storage platforms implement clones the same way. Some deliver true copy-on-write efficiency; others create full copies behind the scenes. For a detailed comparison of how VMware linked clones, ODF/Ceph RBD CoW clones, and IBM Cloud storage each approach the problem, see [Linked Clones Across Platforms](docs/clone-comparison.md).
+Not all storage platforms implement clones the same way. Some deliver true copy-on-write efficiency; others create full copies behind the scenes. For a detailed comparison of how VMware linked clones, ODF/Ceph RBD CoW clones, and IBM Cloud storage each approach the problem, see [Linked Clones Across Platforms](https://neil1taylor.github.io/odf-storage-efficiency-test/clone-comparison.html).
 
-To see what this looks like in practice — how data fans out across nodes, OSDs, and placement groups — see [Understanding Storage Distribution](docs/storage-distribution.md).
+To see what this looks like in practice — how data fans out across nodes, OSDs, and placement groups — see [Understanding Storage Distribution](https://neil1taylor.github.io/odf-storage-efficiency-test/storage-distribution.html).
 
-If you are coming from a VMware vSAN background and want to understand how ODF organizes storage — StorageClusters, pools, StorageClasses, replicas vs erasure coding, and how these map to vSAN concepts like disk groups, storage policies, and FTT/FTM — see [ODF Storage Concepts for vSAN Administrators](docs/odf-storage-concepts.md).
+If you are coming from a VMware vSAN background and want to understand how ODF organizes storage — StorageClusters, pools, StorageClasses, replicas vs erasure coding, and how these map to vSAN concepts like disk groups, storage policies, and FTT/FTM — see [ODF Storage Concepts for vSAN Administrators](https://neil1taylor.github.io/odf-storage-efficiency-test/odf-storage-concepts.html).
 
-For a detailed look at how Ceph inline compression affects storage in this test — including why only 4% of data was compressible and what that means for real workloads — see [Compression Analysis](docs/compression-analysis.md).
+For a detailed look at how Ceph inline compression affects storage in this test — including why only 4% of data was compressible and what that means for real workloads — see [Compression Analysis](https://neil1taylor.github.io/odf-storage-efficiency-test/compression-analysis.html).
 
 ## Prerequisites
 
@@ -100,7 +100,7 @@ All measurement data is written to the `results/` directory:
 - `summary.csv` -- Aggregated metrics across all measurement points
 - `storage_efficiency_report.txt` -- Final human-readable report
 
-For an example of the generated report, see the [Example Report](docs/example_report.html).
+For an example of the generated report, see the [Example Report](https://neil1taylor.github.io/odf-storage-efficiency-test/example_report.html).
 
 ## Validating Clone Type
 

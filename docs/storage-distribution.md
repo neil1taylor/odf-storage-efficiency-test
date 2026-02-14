@@ -1,3 +1,8 @@
+---
+layout: default
+title: Understanding Storage Distribution
+---
+
 # Understanding Storage Distribution
 
 ## Introduction
