@@ -21,18 +21,19 @@ echo "============================================"
 echo "  Generating Storage Efficiency Report"
 echo "============================================"
 
-python3 - "$SUMMARY_CSV" "$REPORT_FILE" "$RESULTS_DIR" << 'PYEOF'
+python3 - "$SUMMARY_CSV" "$REPORT_FILE" "$RESULTS_DIR" "${GOLDEN_DISK_SIZE:-}" << 'PYEOF'
 import csv
 import sys
 import os
 import json
 import html
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 summary_file = sys.argv[1]
 report_file = sys.argv[2]
 results_dir = sys.argv[3]
+golden_disk_size_raw = sys.argv[4] if len(sys.argv) > 4 else ''
 
 # ── Data Loading ─────────────────────────────────────────
 
@@ -78,8 +79,34 @@ def safe_int(val, default=0):
     except (ValueError, TypeError):
         return default
 
+def parse_disk_size_gb(raw):
+    """Convert Kubernetes size string (e.g. '20Gi') to float GB. Returns None on failure."""
+    if not raw or not raw.strip():
+        return None
+    raw = raw.strip()
+    try:
+        if raw.endswith('Gi'):
+            return float(raw[:-2])
+        elif raw.endswith('Ti'):
+            return float(raw[:-2]) * 1024
+        elif raw.endswith('Mi'):
+            return float(raw[:-2]) / 1024
+        else:
+            return float(raw)
+    except (ValueError, TypeError):
+        return None
+
+disk_size_gb = parse_disk_size_gb(golden_disk_size_raw)
+
 def compute_analysis(measurements, baseline):
     baseline_stored = safe_float(baseline.get('pool_stored_gb'))
+
+    # Pre-scan: find the post-clone stored value (last clone measurement)
+    post_clone_stored = baseline_stored
+    for m in measurements:
+        if 'clone' in m.get('label', '').lower():
+            post_clone_stored = safe_float(m.get('pool_stored_gb'))
+
     results = []
     for m in measurements:
         stored = safe_float(m.get('pool_stored_gb'))
@@ -91,12 +118,7 @@ def compute_analysis(measurements, baseline):
         csi_clones = safe_int(m.get('csi_clones'))
         copy_clones = safe_int(m.get('copy_clones'))
 
-        delta = stored - baseline_stored
-        full_clone_cost = pvc_count * baseline_stored if pvc_count > 0 else stored
-        efficiency = full_clone_cost / stored if stored > 0 and pvc_count > 1 else 0
-        savings = full_clone_cost - stored if pvc_count > 1 else 0
-
-        # Classify phase
+        # Classify phase (must be before full_clone_cost calculation)
         label_lower = m.get('label', '').lower()
         if 'baseline' in label_lower:
             phase_type = 'baseline'
@@ -106,6 +128,15 @@ def compute_analysis(measurements, baseline):
             phase_type = 'drift'
         else:
             phase_type = 'other'
+
+        delta = stored - baseline_stored
+        if phase_type == 'drift':
+            drift_total = max(stored - post_clone_stored, 0)
+            full_clone_cost = pvc_count * baseline_stored + drift_total
+        else:
+            full_clone_cost = pvc_count * baseline_stored if pvc_count > 0 else stored
+        efficiency = full_clone_cost / stored if stored > 0 and pvc_count > 1 else 0
+        savings = full_clone_cost - stored if pvc_count > 1 else 0
 
         results.append({
             'label': m.get('label', ''),
@@ -204,7 +235,7 @@ def build_css():
     tr.phase-baseline { background: #e8f5e9; }
     tr.phase-clone { background: #e3f2fd; }
     tr.phase-drift { background: #fff3e0; }
-    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; width: 1%; }
 
     /* Charts */
     .chart-container { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin: 1rem 0; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
@@ -250,7 +281,7 @@ def build_css():
     }
     """
 
-def build_executive_summary(analysis, baseline_stored):
+def build_executive_summary(analysis, baseline_stored, disk_size_gb=None):
     clone_phases = [a for a in analysis if a['phase_type'] == 'clone']
     drift_phases = [a for a in analysis if a['phase_type'] == 'drift']
 
@@ -269,17 +300,20 @@ def build_executive_summary(analysis, baseline_stored):
 
     # Compression
     last = analysis[-1] if analysis else None
-    if last and last['compress_under'] > 0:
-        ratio = (last['compress_used'] / last['compress_under'] * 100) if last['compress_under'] > 0 else 0
-        compress_val = f"{ratio:.0f}%"
-        compress_label = "Compression Ratio"
+    if last and last['compress_saved'] > 0:
+        ratio = (last['compress_saved'] / last['stored_gb'] * 100) if last['stored_gb'] > 0 else 0
+        compress_val = f"{ratio:.1f}%"
+        compress_label = "Compression Savings"
     else:
         compress_val = "Off"
         compress_label = "Compression"
 
+    eff_label = "Storage Efficiency (at clone time)" if drift_phases else "Storage Efficiency"
+    savings_label = "Space Saved (at clone time)" if drift_phases else "Space Saved vs Full Copies"
+
     cards_html = '<div class="cards">'
-    cards_html += f'<div class="card green"><div class="value">{esc(efficiency_val)}</div><div class="label">Storage Efficiency</div></div>'
-    cards_html += f'<div class="card blue"><div class="value">{esc(savings_val)}</div><div class="label">Space Saved vs Full Copies</div></div>'
+    cards_html += f'<div class="card green"><div class="value">{esc(efficiency_val)}</div><div class="label">{esc(eff_label)}</div></div>'
+    cards_html += f'<div class="card blue"><div class="value">{esc(savings_val)}</div><div class="label">{esc(savings_label)}</div></div>'
     cards_html += f'<div class="card purple"><div class="value">{esc(clone_method)}</div><div class="label">Clone Method</div></div>'
     cards_html += f'<div class="card orange"><div class="value">{esc(compress_val)}</div><div class="label">{esc(compress_label)}</div></div>'
     cards_html += '</div>'
@@ -288,7 +322,10 @@ def build_executive_summary(analysis, baseline_stored):
     findings = []
     if clone_phases:
         p = clone_phases[-1]
-        findings.append(f"<strong>{p['pvc_count']} VM disks</strong> were cloned from a <strong>{baseline_stored:.1f} GB</strong> golden image.")
+        if disk_size_gb is not None:
+            findings.append(f"<strong>{p['pvc_count']} VM disks</strong> ({disk_size_gb:.0f} GB each) were cloned from a <strong>{baseline_stored:.1f} GB</strong> golden image.")
+        else:
+            findings.append(f"<strong>{p['pvc_count']} VM disks</strong> were cloned from a <strong>{baseline_stored:.1f} GB</strong> golden image.")
         findings.append(f"Cloning added only <strong>{p['delta_gb']:.2f} GB</strong> of additional storage — "
                         f"just <strong>{(p['delta_gb'] / baseline_stored * 100):.1f}%</strong> overhead." if baseline_stored > 0 else "")
         findings.append(f"Without copy-on-write, full copies would have consumed <strong>{p['full_clone_cost']:.0f} GB</strong>. "
@@ -298,11 +335,22 @@ def build_executive_summary(analysis, baseline_stored):
 
     if drift_phases:
         last_drift = drift_phases[-1]
-        findings.append(f"After maximum drift ({esc(last_drift['label'])}), efficiency is still "
+        findings.append(f"At the highest tested drift level ({esc(last_drift['label'])}), efficiency is still "
                         f"<strong>{last_drift['efficiency']:.1f}x</strong> better than full copies.")
 
-    if last and last['compress_saved'] > 0:
-        findings.append(f"Ceph compression saved an additional <strong>{last['compress_saved']:.1f} GB</strong> of physical disk space.")
+    if last and last['compress_saved'] > 0 and last['stored_gb'] > 0:
+        compress_pct = last['compress_saved'] / last['stored_gb'] * 100
+        findings.append(f"Ceph compression saved an additional <strong>{last['compress_saved']:.1f} GB</strong> "
+                        f"(<strong>{compress_pct:.1f}%</strong> of stored data) of physical disk space.")
+
+    if disk_size_gb is not None and clone_phases:
+        p = clone_phases[-1]
+        provisioned_total = p['pvc_count'] * disk_size_gb
+        findings.append(
+            f"Thin provisioning saves the most: {p['pvc_count']} VMs with {disk_size_gb:.0f} GB disks "
+            f"would provision <strong>{provisioned_total:,.0f} GB</strong>, but only "
+            f"<strong>{p['stored_gb']:.0f} GB</strong> is actually stored."
+        )
 
     findings_html = ""
     findings = [f for f in findings if f]
@@ -367,11 +415,17 @@ def build_methodology_section():
       <div class="step">
         <div class="step-num">3</div>
         <h4>Simulate Drift</h4>
-        <p>Each clone writes unique data to simulate real-world usage (OS updates, logs,
-        application data). Storage is measured at cumulative drift levels (1%, 5%, 10%, 25%
-        of disk size) to show how efficiency changes as VMs diverge.</p>
+        <p>Each clone writes new, unique files filled with random (incompressible) data to
+        simulate real-world divergence. Drift levels are cumulative and additive — at each
+        level, a new file is written alongside previous ones, so storage grows with every
+        phase. Measurements are taken at 1%, 5%, 10%, and 25% of disk size.</p>
       </div>
     </div>
+    <p><strong>Note on test data:</strong> Both the golden image payload and all drift data are written
+    using <code>/dev/urandom</code> (random, incompressible data). This represents a worst case for
+    Ceph compression — real VM workloads containing logs, databases, and application data would see
+    significantly better compression ratios. The random data isolates copy-on-write efficiency without
+    compression masking the results.</p>
     <p>Storage is measured at each stage using Ceph pool-level metrics. The key question:
     <strong>how much less storage does ODF use compared to making full copies of every VM?</strong></p>
     """
@@ -419,8 +473,7 @@ def build_charts_section(analysis, has_chartjs):
     full_cost_json = json.dumps([round(a['full_clone_cost'], 1) for a in analysis])
     efficiency_json = json.dumps([round(a['efficiency'], 2) for a in analysis])
     savings_json = json.dumps([round(a['savings'], 1) for a in analysis])
-    compress_under_json = json.dumps([round(a['compress_under'], 2) for a in analysis])
-    compress_used_json = json.dumps([round(a['compress_used'], 2) for a in analysis])
+    compress_saved_json = json.dumps([round(a['compress_saved'], 2) for a in analysis])
 
     s = ''
     if not has_chartjs:
@@ -455,7 +508,7 @@ def build_charts_section(analysis, has_chartjs):
     # Chart 4: Compression Impact
     s += '<div class="chart-container">'
     s += '<h3>Compression Impact</h3>'
-    s += '<p style="font-size:0.85rem;color:var(--text-muted);">Original data size before compression (orange) vs compressed size on disk (teal). Only shows data that Ceph compressed.</p>'
+    s += '<p style="font-size:0.85rem;color:var(--text-muted);">Total data stored (green) vs space saved by compression (orange). The combined height shows what storage would be without compression.</p>'
     s += '<canvas id="chart-compression"></canvas>'
     s += '</div>'
 
@@ -472,8 +525,7 @@ def build_charts_section(analysis, has_chartjs):
       var fullCost = {full_cost_json};
       var efficiency = {efficiency_json};
       var savings = {savings_json};
-      var compUnder = {compress_under_json};
-      var compUsed = {compress_used_json};
+      var compSaved = {compress_saved_json};
 
       var fontColor = '#1a1a2e';
       var gridColor = '#dee2e6';
@@ -549,16 +601,16 @@ def build_charts_section(analysis, has_chartjs):
         data: {{
           labels: labels,
           datasets: [
-            {{ label: 'Before Compression (GB)', data: compUnder, backgroundColor: 'rgba(230,126,34,0.6)', borderColor: 'rgba(230,126,34,1)', borderWidth: 1 }},
-            {{ label: 'After Compression (GB)', data: compUsed, backgroundColor: 'rgba(13,202,240,0.6)', borderColor: 'rgba(13,202,240,1)', borderWidth: 1 }}
+            {{ label: 'Stored Data (GB)', data: stored, backgroundColor: 'rgba(25,135,84,0.7)', borderColor: 'rgba(25,135,84,1)', borderWidth: 1 }},
+            {{ label: 'Compression Savings (GB)', data: compSaved, backgroundColor: 'rgba(230,126,34,0.6)', borderColor: 'rgba(230,126,34,1)', borderWidth: 1 }}
           ]
         }},
         options: {{
           responsive: true,
           plugins: {{
-            tooltip: {{ callbacks: {{ label: function(c) {{ return c.dataset.label + ': ' + c.parsed.y.toFixed(2) + ' GB'; }} }} }}
+            tooltip: {{ callbacks: {{ label: function(c) {{ return c.dataset.label + ': ' + c.parsed.y.toFixed(1) + ' GB'; }} }} }}
           }},
-          scales: {{ y: {{ beginAtZero: true, title: {{ display: true, text: 'Storage (GB)' }} }} }}
+          scales: {{ x: {{ stacked: true }}, y: {{ stacked: true, beginAtZero: true, title: {{ display: true, text: 'Storage (GB)' }} }} }}
         }}
       }});
     }});
@@ -566,11 +618,30 @@ def build_charts_section(analysis, has_chartjs):
     """
     return s
 
-def build_analysis_section(analysis, baseline_stored):
+def build_analysis_section(analysis, baseline_stored, disk_size_gb=None):
     clone_phases = [a for a in analysis if a['phase_type'] == 'clone']
     drift_phases = [a for a in analysis if a['phase_type'] == 'drift']
 
     s = ''
+
+    # Thin provisioning context (shown first — largest savings layer)
+    if disk_size_gb is not None and clone_phases:
+        p = clone_phases[-1]
+        provisioned_total = p['pvc_count'] * disk_size_gb
+        utilisation_pct = (p['stored_gb'] / provisioned_total * 100) if provisioned_total > 0 else 0
+        thin_savings = provisioned_total - p['stored_gb']
+
+        s += '<h3>Thin Provisioning</h3>'
+        s += f'<p>Each VM is provisioned with a <strong>{disk_size_gb:.0f} GB</strong> virtual disk, '
+        s += f'but only blocks the VM has actually written consume storage. '
+        s += f'With <strong>{p["pvc_count"]} VMs</strong>, the total provisioned capacity is '
+        s += f'<strong>{provisioned_total:,.0f} GB</strong>, yet only '
+        s += f'<strong>{p["stored_gb"]:.1f} GB</strong> is actually stored — '
+        s += f'a <strong>{utilisation_pct:.1f}%</strong> utilisation rate.</p>'
+        s += f'<p>Thin provisioning alone saves <strong>{thin_savings:,.0f} GB</strong>. '
+        s += f'Copy-on-write cloning and Ceph compression provide <em>additional</em> reductions '
+        s += f'on top of this.</p>'
+
     if clone_phases:
         p = clone_phases[-1]
         overhead_pct = (p['delta_gb'] / baseline_stored * 100) if baseline_stored > 0 else 0
@@ -594,9 +665,10 @@ def build_analysis_section(analysis, baseline_stored):
 
     if drift_phases:
         s += '<h3>Drift Impact</h3>'
-        s += '<p>As VMs run, they write unique data (OS updates, logs, application data) and gradually '
-        s += 'diverge from the shared golden image. Each MB of unique data per VM adds to the storage '
-        s += 'pool. The table below shows how efficiency decreases as VMs drift:</p>'
+        s += '<p>As VMs run, each drift level writes a new file of random data to every clone — previous '
+        s += 'files are kept, so storage grows cumulatively. (For example, after the 5% level each clone '
+        s += 'holds both a 200 MB file and an 824 MB file.) The table below shows how efficiency '
+        s += 'decreases as data accumulates:</p>'
         s += '<table><thead><tr><th>Drift Level</th><th class="num">New Data Added (GB)</th>'
         s += '<th class="num">Total Stored (GB)</th><th class="num">Efficiency</th></tr></thead><tbody>'
 
@@ -616,11 +688,14 @@ def build_analysis_section(analysis, baseline_stored):
     last = analysis[-1] if analysis else None
     if last and last['compress_saved'] > 0:
         s += '<h3>Compression Impact</h3>'
-        ratio = (last['compress_used'] / last['compress_under'] * 100) if last['compress_under'] > 0 else 0
-        s += f'<p>Ceph inline compression reduced {last["compress_under"]:.2f} GB of compressible data '
-        s += f'down to {last["compress_used"]:.2f} GB — a <strong>{ratio:.0f}%</strong> compressed ratio, '
-        s += f'saving <strong>{last["compress_saved"]:.1f} GB</strong> of physical disk space on top of '
-        s += f'the CoW savings.</p>'
+        ratio = (last['compress_saved'] / last['stored_gb'] * 100) if last['stored_gb'] > 0 else 0
+        s += f'<p>Ceph inline compression saved <strong>{last["compress_saved"]:.1f} GB</strong>, '
+        s += f'reducing overall storage by <strong>{ratio:.1f}%</strong> on top of the CoW savings. '
+        s += f'(Of the {last["stored_gb"]:.1f} GB stored, {last["compress_under"]:.1f} GB was eligible for '
+        s += f'compression and was reduced to {last["compress_used"]:.1f} GB.)</p>'
+        s += '<p><em>Note: This test uses random data (<code>/dev/urandom</code>), which is incompressible '
+        s += 'by design — a worst-case scenario for compression. Production VMs with real application data '
+        s += '(logs, databases, documents) would see substantially higher compression savings.</em></p>'
 
     if not clone_phases and not drift_phases:
         s += '<p>Only baseline measurements are available. Run clone and drift phases to see efficiency analysis.</p>'
@@ -662,7 +737,7 @@ def build_vmware_comparison(analysis, baseline_stored):
 
     return s
 
-def build_glossary():
+def build_glossary(disk_size_gb=None):
     terms = [
         ('Copy-on-Write (CoW)', 'A cloning technique where new VMs share the original disk data and only store bytes that change. This is why 100 clones don\'t take 100x the storage — they all point back to the same golden image.'),
         ('Golden Image', 'The original VM template that all clones are based on. It contains the OS, base packages, and test data. Clones reference this image rather than copying it.'),
@@ -671,12 +746,13 @@ def build_glossary():
         ('Data Stored', 'The amount of actual unique data in the pool, measured before Ceph replicates it. This is the real footprint of your VMs\' data.'),
         ('Disk Used', 'Total physical disk space consumed, including all replicas. For a 2x replicated pool, this is roughly 2x Data Stored.'),
         ('Replication Factor', 'How many copies of each data block Ceph maintains for redundancy. A factor of 2 means every byte exists on 2 different disks. If one disk fails, no data is lost.'),
-        ('Efficiency Ratio', 'Full-clone cost divided by actual storage. If 100 VMs with 20 GB disks would need 2,000 GB as full copies but only use 25 GB, the ratio is 80x.'),
+        ('Efficiency Ratio', 'Full-clone cost divided by actual storage. Full-clone cost is what storage would be if every clone were a complete, independent copy — including any drift data, which would exist regardless of cloning strategy. Higher ratio = more savings from CoW.'),
         ('PVC (Persistent Volume Claim)', 'A Kubernetes request for storage. Each VM gets one PVC, which maps to one Ceph RBD image (virtual disk).'),
         ('RBD (RADOS Block Device)', 'Ceph\'s block storage system. Each VM disk is an RBD image — a virtual block device backed by the distributed Ceph cluster.'),
         ('CSI Clone', 'A clone created through the Container Storage Interface using Ceph\'s native CoW. This is the efficient method that shows as "csi-clone" in annotations.'),
-        ('Drift', 'Unique data written to a clone after it was created. Represents real-world VM usage like OS updates, logs, and application data. More drift = more storage consumed.'),
+        ('Drift', 'New files written to a clone after it was created to simulate real-world divergence. Each drift level adds a separate file of random data — previous levels are kept, so storage grows cumulatively. More drift = more storage consumed.'),
         ('Inline Compression', 'Ceph can compress data before writing it to disk. "Aggressive" mode compresses everything; "passive" only compresses data with a hint. Saves physical disk space.'),
+        ('Thin Provisioning', 'A storage technique where a virtual disk (e.g. 20 GB) only consumes space for blocks the VM has actually written. Unwritten regions cost zero storage. This is the default for Ceph RBD images and is the largest source of storage savings when VMs use only a fraction of their provisioned capacity.'),
         ('Failure Domain', 'The boundary within which Ceph places replicas. If the failure domain is "rack", each replica goes to a different rack, so losing an entire rack doesn\'t cause data loss.'),
         ('DataVolume', 'A CDI (Containerized Data Importer) resource that creates and populates a PVC. Used to import the golden image and create clones.'),
     ]
@@ -686,9 +762,9 @@ def build_glossary():
     s += '</dl>'
     return s
 
-def build_html(analysis, baseline_stored, env_text, facts, chartjs_code):
+def build_html(analysis, baseline_stored, env_text, facts, chartjs_code, disk_size_gb=None):
     has_chartjs = chartjs_code is not None
-    generated = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     parts = []
     parts.append('<!DOCTYPE html>')
@@ -709,7 +785,7 @@ def build_html(analysis, baseline_stored, env_text, facts, chartjs_code):
 
     # Executive Summary
     parts.append('<h2>Executive Summary</h2>')
-    parts.append(build_executive_summary(analysis, baseline_stored))
+    parts.append(build_executive_summary(analysis, baseline_stored, disk_size_gb=disk_size_gb))
 
     # Storage Environment
     parts.append('<h2>Storage Environment</h2>')
@@ -731,7 +807,7 @@ def build_html(analysis, baseline_stored, env_text, facts, chartjs_code):
 
     # Analysis
     parts.append('<h2>Analysis</h2>')
-    parts.append(build_analysis_section(analysis, baseline_stored))
+    parts.append(build_analysis_section(analysis, baseline_stored, disk_size_gb=disk_size_gb))
 
     # VMware Comparison
     parts.append('<h2>VMware Comparison</h2>')
@@ -740,7 +816,7 @@ def build_html(analysis, baseline_stored, env_text, facts, chartjs_code):
     # Glossary
     parts.append('<h2>Glossary</h2>')
     parts.append('<p>Plain-language definitions of storage terms used in this report.</p>')
-    parts.append(build_glossary())
+    parts.append(build_glossary(disk_size_gb=disk_size_gb))
 
     # Footer
     parts.append(f'<hr style="margin-top:2rem;border:none;border-top:1px solid var(--border);">')
@@ -771,7 +847,7 @@ def main():
     chartjs_code = load_chartjs()
 
     analysis = compute_analysis(measurements, baseline)
-    report_html = build_html(analysis, baseline_stored, env_text, facts, chartjs_code)
+    report_html = build_html(analysis, baseline_stored, env_text, facts, chartjs_code, disk_size_gb=disk_size_gb)
 
     with open(report_file, 'w') as f:
         f.write(report_html)
@@ -791,4 +867,12 @@ echo ""
 echo "Done. Report saved to:"
 echo "  $REPORT_FILE"
 echo ""
-echo "Open it in a browser, or print to PDF from the browser."
+
+# Open in default browser (works on macOS and Linux)
+if command -v open &>/dev/null; then
+    open "$REPORT_FILE"
+elif command -v xdg-open &>/dev/null; then
+    xdg-open "$REPORT_FILE"
+else
+    echo "Open it in a browser, or print to PDF from the browser."
+fi

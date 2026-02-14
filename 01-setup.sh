@@ -109,8 +109,13 @@ if [[ -z "$CEPH_POOL" ]]; then
 fi
 echo "Using Ceph pool: $CEPH_POOL"
 
-# ── 8. Capture storage environment summary ───────────────
-echo "[8] Capturing storage environment summary..."
+# ── 8. Reset results directory ────────────────────────────
+echo "[8] Clearing previous results..."
+rm -rf "$RESULTS_DIR"
+mkdir -p "$RESULTS_DIR"
+
+# ── 9. Capture storage environment summary ───────────────
+echo "[9] Capturing storage environment summary..."
 
 # Gather data from cluster and Ceph
 ODF_VER=$(oc get csv -n openshift-storage 2>/dev/null \

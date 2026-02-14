@@ -46,3 +46,4 @@ Scripts `02`, `04`, and `05` automatically call `03-measure-storage.sh` at key p
 - Drift simulation (Phase 3) writes incremental unique data at cumulative levels defined in `DRIFT_LEVELS_MB` (default: 200, 1024, 2048, 5120 MB = 1%, 5%, 10%, 25% of 20GB disk).
 - Batch operations use `CLONE_BATCH_SIZE` (default 20) with background processes and `wait` to avoid API pressure.
 - The cleanup script (`07`) requires interactive `yes` confirmation and preserves the `results/` directory.
+- All test data (golden image payload and drift writes) uses `/dev/urandom` — random, incompressible data. This is intentional: it creates a worst-case scenario for compression so the test isolates CoW cloning efficiency. Real workloads would see much better compression.
