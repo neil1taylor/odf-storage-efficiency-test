@@ -8,9 +8,19 @@ ODF with Ceph RBD supports **copy-on-write (CoW) clones** at the block-storage l
 
 - **Clone creation is near-instant** regardless of disk size.
 - **Storage cost is zero** until the clone writes unique data.
-- **Drift is incremental** -- only changed blocks consume additional space.
+- **Drift is additive** -- each drift level writes new files (random data) to every clone; previous drift data is kept, so storage grows cumulatively.
 
 This test harness quantifies that efficiency by measuring Ceph pool usage, per-image `rbd du`, and PVC-to-RBD mappings at each phase of a clone lifecycle.
+
+## Background
+
+Not all storage platforms implement clones the same way. Some deliver true copy-on-write efficiency; others create full copies behind the scenes. For a detailed comparison of how VMware linked clones, ODF/Ceph RBD CoW clones, and IBM Cloud storage each approach the problem, see [Linked Clones Across Platforms](docs/clone-comparison.md).
+
+To see what this looks like in practice — how data fans out across nodes, OSDs, and placement groups — see [Understanding Storage Distribution](docs/storage-distribution.md).
+
+If you are coming from a VMware vSAN background and want to understand how ODF organizes storage — StorageClusters, pools, StorageClasses, replicas vs erasure coding, and how these map to vSAN concepts like disk groups, storage policies, and FTT/FTM — see [ODF Storage Concepts for vSAN Administrators](docs/odf-storage-concepts.md).
+
+For a detailed look at how Ceph inline compression affects storage in this test — including why only 4% of data was compressible and what that means for real workloads — see [Compression Analysis](docs/compression-analysis.md).
 
 ## Prerequisites
 
@@ -28,7 +38,7 @@ This test harness quantifies that efficiency by measuring Ceph pool usage, per-i
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/<org>/odf-storage-efficiency-test.git
+git clone https://github.com/neil1taylor/odf-storage-efficiency-test.git
 cd odf-storage-efficiency-test
 
 # 2. Edit configuration to match your cluster
@@ -89,6 +99,8 @@ All measurement data is written to the `results/` directory:
 - `*_clone-info.txt` -- Clone parent relationships
 - `summary.csv` -- Aggregated metrics across all measurement points
 - `storage_efficiency_report.txt` -- Final human-readable report
+
+For an example of the generated report, see the [Example Report](docs/example_report.html).
 
 ## Validating Clone Type
 
