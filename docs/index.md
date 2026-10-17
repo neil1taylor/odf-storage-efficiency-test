@@ -13,6 +13,7 @@ Benchmarking how OpenShift Data Foundation (ODF / Ceph RBD) handles VM disk clon
 - [Understanding Storage Distribution](storage-distribution.html) — How data fans out across nodes, OSDs, and placement groups
 - [ODF Storage Concepts for vSAN Administrators](odf-storage-concepts.html) — ODF concepts mapped to VMware vSAN terminology
 - [Compression Analysis](compression-analysis.html) — Why compression saves only 4% in this test and what that means for real workloads
+- [VPCMigrationFactory Findings](vpcmigrationfactory-findings.html) — 303 VMs from a VolumeSnapshot and the snapshot RBD image features, from IBM Box notes (not reproduced)
 
 ## Example Report
 
